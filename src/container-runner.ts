@@ -12,6 +12,7 @@ import { OneCLI } from '@onecli-sh/sdk';
 import { CONTAINER_IMAGE, DATA_DIR, GROUPS_DIR, MAX_MESSAGES_PER_PROMPT, ONECLI_URL, TIMEZONE } from './config.js';
 import { readContainerConfig, writeContainerConfig } from './container-config.js';
 import { CONTAINER_RUNTIME_BIN, hostGatewayArgs, readonlyMountArgs, stopContainer } from './container-runtime.js';
+import { composeGroupClaudeMd } from './claude-md-compose.js';
 import { getAgentGroup } from './db/agent-groups.js';
 import { getDb, hasTable } from './db/connection.js';
 import { initGroupFilesystem } from './group-init.js';
@@ -181,6 +182,10 @@ function buildMounts(
   // (host-mediated tools), not something the spawn path does silently.
   initGroupFilesystem(agentGroup);
 
+  // Compose CLAUDE.md fresh every spawn from the shared base, enabled skill
+  // fragments, and MCP server instructions. See `claude-md-compose.ts`.
+  composeGroupClaudeMd(agentGroup);
+
   const mounts: VolumeMount[] = [];
   const sessDir = sessionDir(agentGroup.id, session.id);
   const groupDir = path.resolve(GROUPS_DIR, agentGroup.folder);
@@ -191,11 +196,11 @@ function buildMounts(
   // Agent group folder at /workspace/agent
   mounts.push({ hostPath: groupDir, containerPath: '/workspace/agent', readonly: false });
 
-  // Global memory directory — always read-only. Edits to global config
-  // happen through the approval flow, not by handing one workspace RW.
-  const globalDir = path.join(GROUPS_DIR, 'global');
-  if (fs.existsSync(globalDir)) {
-    mounts.push({ hostPath: globalDir, containerPath: '/workspace/global', readonly: true });
+  // Shared CLAUDE.md — read-only, imported by the composed entry point via
+  // the `.claude-shared.md` symlink inside the group dir.
+  const sharedClaudeMd = path.join(process.cwd(), 'container', 'CLAUDE.md');
+  if (fs.existsSync(sharedClaudeMd)) {
+    mounts.push({ hostPath: sharedClaudeMd, containerPath: '/app/CLAUDE.md', readonly: true });
   }
 
   // Per-group .claude-shared at /home/node/.claude (Claude state, settings,
