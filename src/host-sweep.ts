@@ -28,7 +28,9 @@
  */
 import type Database from 'better-sqlite3';
 import fs from 'fs';
+import path from 'path';
 
+import { DATA_DIR } from './config.js';
 import { getActiveSessions } from './db/sessions.js';
 import { getAgentGroup } from './db/agent-groups.js';
 import {
@@ -117,6 +119,8 @@ export function stopHostSweep(): void {
   running = false;
 }
 
+const HOST_ALIVE_PATH = path.join(DATA_DIR, '.host-alive');
+
 async function sweep(): Promise<void> {
   if (!running) return;
 
@@ -125,11 +129,21 @@ async function sweep(): Promise<void> {
     for (const session of sessions) {
       await sweepSession(session);
     }
+    touchHostAlive();
   } catch (err) {
     log.error('Host sweep error', { err });
   }
 
   setTimeout(sweep, SWEEP_INTERVAL_MS);
+}
+
+function touchHostAlive(): void {
+  try {
+    const now = new Date();
+    fs.utimesSync(HOST_ALIVE_PATH, now, now);
+  } catch {
+    fs.writeFileSync(HOST_ALIVE_PATH, '');
+  }
 }
 
 async function sweepSession(session: Session): Promise<void> {
