@@ -128,11 +128,16 @@ export function resolveSession(
 /** Create the session folder and initialize both DBs. */
 export function initSessionFolder(agentGroupId: string, sessionId: string): void {
   const dir = sessionDir(agentGroupId, sessionId);
-  fs.mkdirSync(dir, { recursive: true });
-  fs.mkdirSync(path.join(dir, 'outbox'), { recursive: true });
+  fs.mkdirSync(dir, { recursive: true, mode: 0o777 });
+  fs.mkdirSync(path.join(dir, 'outbox'), { recursive: true, mode: 0o777 });
 
   ensureSchema(inboundDbPath(agentGroupId, sessionId), 'inbound');
-  ensureSchema(outboundDbPath(agentGroupId, sessionId), 'outbound');
+
+  // outbound.db is written by the agent container (uid 1000 / node).
+  // Host runs as root in Docker Compose — chmod so the agent can write.
+  const outboundPath = outboundDbPath(agentGroupId, sessionId);
+  ensureSchema(outboundPath, 'outbound');
+  fs.chmodSync(outboundPath, 0o666);
 }
 
 /**
