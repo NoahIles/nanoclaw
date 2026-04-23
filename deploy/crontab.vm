@@ -1,0 +1,14 @@
+# NanoClaw VM crontab
+# Install with: crontab deploy/crontab.vm
+# Or merge into existing crontab: crontab -e
+
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# Nightly MemPalace mining — indexes synced Claude Code sessions + project files
+# Runs at 02:00 AM. Adjust to a quiet hour in your timezone.
+0 2 * * * /opt/nanoclaw/scripts/mine.sh >> /opt/nanoclaw/logs/mine.log 2>&1
+
+# Nightly SQLite backup — backs up v2.db and MemPalace knowledge graph
+# Runs at 03:00 AM, after mining completes.
+0 3 * * * /opt/nanoclaw/scripts/backup.sh >> /opt/nanoclaw/logs/backup.log 2>&1

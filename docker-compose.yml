@@ -1,0 +1,128 @@
+services:
+
+  # ── NanoClaw host ────────────────────────────────────────────────────────────
+  # Node.js host process: routes messages, spawns per-session agent containers.
+  # Runs at /opt/nanoclaw inside the container — same path as on the VM host —
+  # so that agent container volume mounts generated here are valid host paths
+  # (Docker-outside-of-Docker path consistency requirement).
+  nanoclaw:
+    build:
+      context: .
+      dockerfile: Dockerfile.host
+    working_dir: /opt/nanoclaw
+    volumes:
+      # Bind at the same absolute path used on the VM host (DOOD requirement)
+      - /opt/nanoclaw/data:/opt/nanoclaw/data
+      - /opt/nanoclaw/logs:/opt/nanoclaw/logs
+      - /opt/nanoclaw/groups:/opt/nanoclaw/groups
+      # Docker socket — nanoclaw spawns agent containers via the host daemon
+      - /var/run/docker.sock:/var/run/docker.sock
+    env_file: .env
+    environment:
+      # OneCLI gateway runs natively on the VM host; reach it via host-gateway
+      ONECLI_URL: http://host-gateway:10254
+    extra_hosts:
+      - "host-gateway:host-gateway"
+    depends_on:
+      mempalace:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - nanoclaw-net
+    healthcheck:
+      # Host writes a heartbeat file; use it as the liveness signal
+      test: ["CMD", "test", "-f", "/opt/nanoclaw/data/.host-alive"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    logging:
+      driver: local
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  # ── MemPalace MCP server ─────────────────────────────────────────────────────
+  # mempalace mcp wrapped by supergateway → HTTP/SSE on port 3100.
+  # Reachable internally at http://mempalace:3100/sse (agent containers).
+  # Reachable externally via Caddy at https://mempalace.home/sse.
+  mempalace:
+    build:
+      context: .
+      dockerfile: Dockerfile.mempalace
+    volumes:
+      - mempalace-data:/root/.mempalace
+    ports:
+      - "127.0.0.1:3100:3100"
+    restart: unless-stopped
+    networks:
+      - nanoclaw-net
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:3100/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    logging:
+      driver: local
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+  # ── MemPalace miner ──────────────────────────────────────────────────────────
+  # One-shot: runs mempalace mine, then exits.
+  # Triggered by VM cron (via: docker compose run --rm mempalace-miner)
+  # or manually via: mise run mine
+  mempalace-miner:
+    build:
+      context: .
+      dockerfile: Dockerfile.mempalace
+    command:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        echo "[miner] Mining conversations..."
+        mempalace mine /opt/nanoclaw/imports/claude-code --mode convos
+        echo "[miner] Mining project files..."
+        mempalace mine /opt/nanoclaw
+        echo "[miner] Done."
+    volumes:
+      - mempalace-data:/root/.mempalace
+      - /opt/nanoclaw/imports:/opt/nanoclaw/imports:ro
+      - /opt/nanoclaw:/opt/nanoclaw:ro
+    restart: "no"
+    networks:
+      - nanoclaw-net
+
+  # ── Backup ───────────────────────────────────────────────────────────────────
+  # One-shot: backs up SQLite databases, then exits.
+  # Triggered by VM cron or manually via: mise run backup
+  backup:
+    image: alpine:3.21
+    command:
+      - /bin/sh
+      - -c
+      - |
+        apk add --no-cache sqlite
+        /scripts/backup.sh
+    volumes:
+      - /opt/nanoclaw/data:/opt/nanoclaw/data:ro
+      - mempalace-data:/mempalace-data:ro
+      - /opt/nanoclaw/backups:/opt/nanoclaw/backups
+      - ./scripts/backup.sh:/scripts/backup.sh:ro
+    environment:
+      NANOCLAW_DATA: /opt/nanoclaw/data
+      MEMPALACE_DATA: /mempalace-data
+      BACKUP_DIR: /opt/nanoclaw/backups
+      BACKUP_RETAIN_DAYS: "30"
+    restart: "no"
+    networks:
+      - nanoclaw-net
+
+volumes:
+  mempalace-data:
+
+networks:
+  nanoclaw-net:
+    driver: bridge

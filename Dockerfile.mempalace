@@ -1,0 +1,43 @@
+# syntax=docker/dockerfile:1.7
+# MemPalace MCP Server
+# Runs mempalace mcp wrapped by supergateway, exposing HTTP/SSE on port 3100.
+# Also used as the base for the mempalace-miner one-shot service.
+
+FROM python:3.11-slim
+
+# Pin versions for reproducibility — bump deliberately.
+ARG MEMPALACE_VERSION=3.3.2
+ARG NODE_VERSION=22
+ARG SUPERGATEWAY_VERSION=3.4.3
+
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
+        curl \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Node.js (needed for supergateway)
+RUN curl -fsSL https://deb.nodesource.com/setup_${NODE_VERSION}.x | bash - && \
+    apt-get install -y --no-install-recommends nodejs && \
+    rm -rf /var/lib/apt/lists/*
+
+# Install mempalace
+RUN pip install --no-cache-dir mempalace==${MEMPALACE_VERSION}
+
+# Install supergateway globally, pinned
+RUN npm install -g supergateway@${SUPERGATEWAY_VERSION}
+
+# MemPalace data lives here — mount mempalace-data volume at this path
+ENV MEMPALACE_HOME=/root/.mempalace
+
+EXPOSE 3100
+
+# Default: run as MCP HTTP/SSE server via supergateway
+# Override CMD in compose for the miner service
+CMD ["supergateway", \
+     "--stdio", "mempalace mcp", \
+     "--port", "3100", \
+     "--baseUrl", "http://localhost:3100", \
+     "--healthEndpoint", "/healthz", \
+     "--logLevel", "info"]

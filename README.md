@@ -204,6 +204,23 @@ Everything else (new capabilities, OS compatibility, hardware support, enhanceme
 
 This keeps the base system minimal and lets every user customize their installation without inheriting features they don't want.
 
+## Deployment
+
+For production deployment on a Proxmox VM with Docker Compose, MemPalace unified memory, and Caddy reverse proxy, see **[deploy/README.md](deploy/README.md)**.
+
+Quick summary:
+- NanoClaw + MemPalace run as a flat Docker Compose stack on the VM
+- OneCLI credential gateway runs natively on the VM host
+- Caddy on a separate LXC routes `onecli.home`, `mempalace.home`, `dashboard.home`
+- A Claude Code `Stop` hook syncs your local sessions to MemPalace automatically
+
+To install the Stop hook on your local machine:
+```bash
+mise run install-hook
+```
+
+Or manually: see [deploy/README.md § Local machine setup](deploy/README.md#3-local-machine-setup-claude-code-stop-hook).
+
 ## Community
 
 Questions? Ideas? [Join the Discord](https://discord.gg/VDdww8qS42).
