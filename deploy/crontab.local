@@ -1,0 +1,16 @@
+# NanoClaw local machine crontab — catch-up rsync
+# Install with: crontab deploy/crontab.local
+# Or merge into existing crontab: crontab -e
+#
+# This catches any Claude Code sessions where the Stop hook failed to sync
+# (machine asleep, network blip, etc.). The Stop hook handles the real-time
+# push; this is the safety net.
+#
+# Requires install-stop-hook.sh to have been run first (sets up SSH target config).
+
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# Nightly catch-up sync — runs at 01:00 AM local time
+# Adjust to a time when your machine is likely to be on and the VM reachable.
+0 1 * * * $HOME/Documents/toys/nanoclaw/scripts/sync-to-mempalace.sh >> $HOME/.local/share/nanoclaw/sync.log 2>&1

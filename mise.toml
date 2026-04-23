@@ -1,0 +1,51 @@
+[tools]
+# Declare tool versions managed by mise here if needed
+# node = "22"
+
+[tasks.up]
+description = "Start the NanoClaw stack (detached)"
+run = "docker compose up -d"
+
+[tasks.down]
+description = "Stop the NanoClaw stack"
+run = "docker compose down"
+
+[tasks.restart]
+description = "Restart all services"
+run = "docker compose restart"
+
+[tasks.logs]
+description = "Tail logs from all services"
+run = "docker compose logs -f"
+
+[tasks.ps]
+description = "Show service status"
+run = "docker compose ps"
+
+[tasks.mine]
+description = "Run MemPalace miner now (indexes conversations + project)"
+run = "docker compose run --rm mempalace-miner"
+
+[tasks.backup]
+description = "Run SQLite backup now"
+run = "docker compose run --rm backup"
+
+[tasks.update]
+description = "Pull latest code, rebuild images, restart services"
+run = """
+git pull
+docker compose build
+docker compose up -d
+"""
+
+[tasks.install-hook]
+description = "Install the Claude Code Stop hook on this machine"
+run = "./scripts/install-stop-hook.sh"
+
+[tasks.build]
+description = "Build all Docker images without starting"
+run = "docker compose build"
+
+[tasks.shell]
+description = "Open a shell in the nanoclaw container"
+run = "docker compose exec nanoclaw /bin/bash"

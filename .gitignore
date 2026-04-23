@@ -39,3 +39,8 @@ groups/global/*
 .nanoclaw/
 
 agents-sdk-docs
+.superpowers/
+
+# Deployment artifacts (local to each install)
+backups/
+imports/
