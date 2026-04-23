@@ -83,9 +83,9 @@ services:
       - |
         set -e
         echo "[miner] Mining conversations..."
-        mempalace mine /opt/nanoclaw/imports/claude-code --mode convos
+        python -m mempalace mine /opt/nanoclaw/imports/claude-code --mode convos
         echo "[miner] Mining project files..."
-        mempalace mine /opt/nanoclaw
+        python -m mempalace mine /opt/nanoclaw
         echo "[miner] Done."
     volumes:
       - mempalace-data:/root/.mempalace

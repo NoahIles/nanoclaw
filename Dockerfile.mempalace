@@ -36,7 +36,7 @@ EXPOSE 3100
 # Default: run as MCP HTTP/SSE server via supergateway
 # Override CMD in compose for the miner service
 CMD ["supergateway", \
-     "--stdio", "mempalace mcp", \
+     "--stdio", "python -m mempalace.mcp_server", \
      "--port", "3100", \
      "--baseUrl", "http://localhost:3100", \
      "--healthEndpoint", "/healthz", \
