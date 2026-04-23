@@ -17,6 +17,8 @@ services:
       - /opt/nanoclaw/groups:/opt/nanoclaw/groups
       # Docker socket — nanoclaw spawns agent containers via the host daemon
       - /var/run/docker.sock:/var/run/docker.sock
+      # readEnvFile reads .env from disk; env_file only injects into process.env
+      - /opt/nanoclaw/.env:/opt/nanoclaw/.env:ro
     env_file: .env
     environment:
       # OneCLI gateway runs natively on the VM host; reach it via host-gateway
