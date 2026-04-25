@@ -44,3 +44,4 @@ agents-sdk-docs
 # Deployment artifacts (local to each install)
 backups/
 imports/
+deploy/Caddyfile

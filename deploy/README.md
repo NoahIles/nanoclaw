@@ -1,14 +1,15 @@
 # Deployment Runbook
 
-This guide walks through deploying NanoClaw + MemPalace to a Proxmox VM with Caddy on a separate LXC.
+This guide walks through deploying NanoClaw + MemPalace + the memory wiki to a Proxmox VM
+with Caddy on a separate LXC.
 
 ## Overview
 
 | Host | Role |
 |---|---|
-| Proxmox VM | Docker Compose stack: NanoClaw, MemPalace |
+| Proxmox VM | Docker Compose stack: NanoClaw, MemPalace; bare git repo for memory wiki |
 | Proxmox LXC | Caddy reverse proxy |
-| Local machine | Claude Code + Stop hook (pushes sessions to VM) |
+| Local machine | Claude Code + Stop hook (pushes sessions + wiki commits to VM) |
 
 OneCLI runs **natively on the VM** (not in Docker) as a host-level credential gateway. Docker containers reach it via `host-gateway:10254`.
 
@@ -87,7 +88,28 @@ mkdir -p /opt/nanoclaw/{data,logs,groups,backups,imports/claude-code}
 mkdir -p /opt/nanoclaw/groups/{main,global}
 ```
 
-### 1.8 Build the agent container image
+### 1.8 Create the mount allowlist
+
+Agent containers can only bind-mount paths listed in the mount allowlist. Create it before
+starting the stack so the memory wiki mount is permitted from the first session:
+
+```bash
+mkdir -p ~/.config/nanoclaw
+cat > ~/.config/nanoclaw/mount-allowlist.json <<'EOF'
+{
+  "allowedRoots": [
+    {
+      "path": "/opt/nanoclaw/memory",
+      "allowReadWrite": false,
+      "description": "claude-memory wiki (read-only)"
+    }
+  ],
+  "blockedPatterns": []
+}
+EOF
+```
+
+### 1.9 Build the agent container image
 
 The NanoClaw agent container (used for per-session AI runs) is built separately:
 
@@ -95,7 +117,7 @@ The NanoClaw agent container (used for per-session AI runs) is built separately:
 ./container/build.sh
 ```
 
-### 1.9 Start the stack
+### 1.10 Start the stack
 
 ```bash
 mise run up
@@ -104,7 +126,7 @@ mise run ps   # all services should reach 'healthy' within ~60s
 
 Check logs: `mise run logs`
 
-### 1.10 Verify services
+### 1.11 Verify services
 
 ```bash
 # OneCLI (native on host)
@@ -117,7 +139,7 @@ docker compose exec nanoclaw curl http://mempalace:3100/healthz
 docker compose logs nanoclaw --tail 50
 ```
 
-### 1.11 Install the VM crontab
+### 1.12 Install the VM crontab
 
 ```bash
 crontab deploy/crontab.vm
@@ -226,7 +248,7 @@ Add to `.mcp.json` in this repo (or `~/.claude/mcp.json` for all projects):
   "mcpServers": {
     "mempalace": {
       "type": "sse",
-      "url": "https://mempalace.home/sse"
+      "url": "https://mempalace.nislands.xyz/sse"
     }
   }
 }
@@ -236,17 +258,118 @@ Start a new Claude Code session — MemPalace tools should appear.
 
 ---
 
-## 4. End-to-end validation
+## 4. Memory wiki setup
 
-1. Start a Claude Code session, do some work, then `/exit`.
-2. Check `~/.local/share/nanoclaw/sync.log` — should show a successful sync.
-3. Check `vm:/opt/nanoclaw/imports/claude-code/` — should contain your project's JSONL files.
-4. Run `mise run mine` on the VM — watch logs show indexed counts.
-5. Start a new Claude Code session with MemPalace MCP wired. Ask MemPalace to search for something from your previous session.
+The memory wiki is a curated, human-readable git repo (`claude-memory`) that sits on top of
+mempalace. Mempalace indexes every conversation; the wiki holds the curated highlights you
+(and agents) actually navigate. It's synced as a bare git repo on the VM, cloned locally,
+and mounted read-only into agent containers.
+
+**`install-stop-hook.sh` handles most of this automatically** — it creates the bare repo,
+pushes the skeleton, and clones it locally. The steps below are for reference or manual
+recovery.
+
+### 4.1 Create the bare repo on the VM (first-time only)
+
+`install-stop-hook.sh` does this during setup. To do it manually:
+
+```bash
+# On the VM — /srv may be root-owned; chown first
+sudo mkdir -p /srv/git && sudo chown $USER:$USER /srv/git
+git init --bare /srv/git/claude-memory.git
+```
+
+Then push the skeleton from local (see step 4.2).
+
+### 4.2 Clone locally
+
+`install-stop-hook.sh` clones to `~/.claude/memory/` automatically. To clone manually:
+
+```bash
+git clone user@vm-ip:/srv/git/claude-memory.git ~/.claude/memory
+```
+
+### 4.3 Clone on the VM (for agent containers)
+
+```bash
+# On the VM
+git clone /srv/git/claude-memory.git /opt/nanoclaw/memory
+```
+
+The VM crontab (`deploy/crontab.vm`) pulls this repo every 5 minutes so agents always
+see recent commits.
+
+**Clone first, then install the crontab.** If you install the cron before the clone, the
+job will log "not a git repository" every 5 minutes until you clone.
+
+```bash
+# Install the crontab after cloning (includes the memory pull entry)
+crontab deploy/crontab.vm
+# Verify
+crontab -l | grep memory
+```
+
+### 4.4 Mount the wiki into agent groups
+
+Add an `additionalMounts` entry to each agent group's `container.json`:
+
+```json
+{
+  "additionalMounts": [
+    {
+      "hostPath": "/opt/nanoclaw/memory",
+      "containerPath": "memory",
+      "readonly": true
+    }
+  ]
+}
+```
+
+`containerPath` must be a **relative** name — the mount-security validator prefixes it with
+`/workspace/extra/`. New sessions for that group will have the wiki at `/workspace/extra/memory/`.
+
+### 4.5 Add the wiki directive to your user CLAUDE.md
+
+So local Claude Code sessions check the wiki automatically, add this to `~/.claude/CLAUDE.md`:
+
+```markdown
+## Memory Wiki
+Before answering questions about Noah's projects, preferences, past decisions, or recurring
+context, read ~/.claude/memory/index.md first, then drill into relevant pages. If the wiki
+doesn't have the answer, fall back to the mempalace MCP tools. Propose wiki updates in chat
+rather than writing files directly.
+```
+
+NanoClaw agent containers read the same wiki at `/workspace/extra/memory/index.md` (read-only
+mount). The `memory-wiki` container skill tells agents to use this path automatically.
+
+### 4.6 Enable the memory-wiki container skill
+
+The `memory-wiki` skill is included in `container/skills/`. Enable it for agent groups
+that should use the wiki by adding it to their skill selection in `container.json`:
+
+```json
+{
+  "skills": ["memory-wiki"],
+  "additionalMounts": [...]
+}
+```
 
 ---
 
-## 5. Dashboard (future)
+## 5. End-to-end validation
+
+1. Start a Claude Code session, do some work, then `/exit`.
+2. Check `~/.local/share/nanoclaw/sync.log` — should show both mempalace and memory sync entries.
+3. Check `vm:/opt/nanoclaw/imports/claude-code/` — should contain your project's JSONL files.
+4. Check `~/.claude/memory/` — should exist (cloned by the hook on first run).
+5. Run `mise run mine` on the VM — watch logs show indexed counts.
+6. Start a new Claude Code session. Ask about a project from the wiki — confirm it cites `index.md`.
+7. Ask about something only in mempalace (an old transcript detail) — confirm it falls back to the MCP tool.
+
+---
+
+## 6. Dashboard (future)
 
 The `dashboard.home` Caddy route is pre-commented in the Caddyfile. When ready, run the `/add-dashboard` skill, uncomment that route, and reload Caddy.
 
@@ -275,3 +398,24 @@ If that fails, verify OneCLI is running on the VM: `onecli status` or `curl http
 **Sync hook not firing:**
 Check `~/.claude/settings.json` has the Stop hook, then check `~/.local/share/nanoclaw/sync.log`.
 Re-run `mise run install-hook` to repair.
+
+**Memory wiki not updating in agent containers:**
+```bash
+# Check VM pull cron is running
+crontab -l | grep memory
+# Force an immediate pull
+git -C /opt/nanoclaw/memory pull --ff-only
+# Check pull log
+tail -20 /opt/nanoclaw/logs/memory-pull.log
+```
+
+**Memory wiki diverged (local and VM have conflicting commits):**
+The fast-forward-only pull silently skips on divergence. To resolve:
+```bash
+# On local — see what's diverged
+git -C ~/.claude/memory log --oneline origin/main..HEAD
+git -C ~/.claude/memory log --oneline HEAD..origin/main
+# Rebase local onto remote (preferred — keeps history linear)
+git -C ~/.claude/memory pull --rebase origin main
+git -C ~/.claude/memory push
+```
