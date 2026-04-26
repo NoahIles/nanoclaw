@@ -8,11 +8,15 @@
 #   3. Writes ~/.config/nanoclaw/mempalace-sync.conf (incl. MEMORY_GIT_REMOTE)
 #   4. Merges Stop hook entries into ~/.claude/settings.json (idempotent):
 #      — sync-to-mempalace.sh (JSONL rsync, async)
-#      — sync-memory.sh       (wiki git sync, async)
+#      — sync-memory.sh       (memory wiki git sync, async)
+#      — sync-llm-wiki.sh     (llm-wiki git sync, async — only with --with-llm-wiki)
 #   5. Bootstraps the bare memory repo on the VM + local clone (if first run)
-#   6. Prints the .mcp.json entry needed for MemPalace in Claude Code
+#   6. Optionally bootstraps the llm-wiki bare repo + local clone (--with-llm-wiki)
+#   7. Prints the .mcp.json entry needed for MemPalace in Claude Code
 #
-# Run with --dry-run to preview the settings.json merge without writing.
+# Flags:
+#   --dry-run        Preview the settings.json merge without writing.
+#   --with-llm-wiki  Also set up the shared bidirectional llm-wiki (Karpathy pattern).
 
 set -euo pipefail
 
@@ -21,10 +25,14 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 SETTINGS_FILE="${HOME}/.claude/settings.json"
 CONF_DIR="${HOME}/.config/nanoclaw"
 CONF_FILE="${CONF_DIR}/mempalace-sync.conf"
+LLM_WIKI_CONF_FILE="${CONF_DIR}/llm-wiki-sync.conf"
 SYNC_SCRIPT="${REPO_ROOT}/scripts/sync-to-mempalace.sh"
 MEMORY_SYNC_SCRIPT="${REPO_ROOT}/scripts/sync-memory.sh"
+LLM_WIKI_SYNC_SCRIPT="${REPO_ROOT}/scripts/sync-llm-wiki.sh"
 MEMORY_DIR="${HOME}/.claude/memory"
+LLM_WIKI_DIR="${HOME}/.claude/llm-wiki"
 DRY_RUN=false
+WITH_LLM_WIKI=false
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -44,7 +52,8 @@ die()     { error "$*"; exit 1; }
 
 for arg in "$@"; do
   case "$arg" in
-    --dry-run) DRY_RUN=true ;;
+    --dry-run)       DRY_RUN=true ;;
+    --with-llm-wiki) WITH_LLM_WIKI=true ;;
     *) die "Unknown argument: $arg" ;;
   esac
 done
@@ -179,6 +188,10 @@ wire_stop_hook() {
 wire_stop_hook "$SYNC_SCRIPT" "MemPalace sync"
 wire_stop_hook "$MEMORY_SYNC_SCRIPT" "Memory wiki sync"
 
+if $WITH_LLM_WIKI; then
+  wire_stop_hook "$LLM_WIKI_SYNC_SCRIPT" "LLM wiki sync"
+fi
+
 if ! $DRY_RUN; then
   echo "$existing" > "$SETTINGS_FILE"
   info "Stop hooks written to $SETTINGS_FILE"
@@ -309,6 +322,170 @@ MDEOF
   fi
 fi
 
+# ── LLM wiki setup (optional, --with-llm-wiki) ───────────────────────────────
+
+if $WITH_LLM_WIKI; then
+  heading "LLM wiki setup"
+
+  DEFAULT_LLM_WIKI_REMOTE="${SSH_HOST}:/srv/git/llm-wiki.git"
+  existing_llm_wiki_remote=""
+  if [[ -f "$LLM_WIKI_CONF_FILE" ]]; then
+    # shellcheck source=/dev/null
+    source "$LLM_WIKI_CONF_FILE"
+    existing_llm_wiki_remote="${LLM_WIKI_REMOTE:-}"
+  fi
+
+  if [[ -n "$existing_llm_wiki_remote" ]]; then
+    echo "Current llm-wiki remote: ${BOLD}${existing_llm_wiki_remote}${NC}"
+    read -rp "Press Enter to keep, or enter a new remote: " wiki_input
+    LLM_WIKI_REMOTE="${wiki_input:-$existing_llm_wiki_remote}"
+  else
+    echo "LLM wiki git remote (bare repo on the VM)."
+    echo "Default: ${DEFAULT_LLM_WIKI_REMOTE}"
+    read -rp "Press Enter to accept default, or enter a custom remote: " wiki_input
+    LLM_WIKI_REMOTE="${wiki_input:-$DEFAULT_LLM_WIKI_REMOTE}"
+  fi
+
+  if $DRY_RUN; then
+    warn "[dry-run] Would write to $LLM_WIKI_CONF_FILE: LLM_WIKI_REMOTE=${LLM_WIKI_REMOTE}"
+  else
+    mkdir -p "$CONF_DIR"
+    chmod 700 "$CONF_DIR"
+    cat > "$LLM_WIKI_CONF_FILE" <<EOF
+# Written by install-stop-hook.sh --with-llm-wiki — edit with care
+LLM_WIKI_REMOTE=${LLM_WIKI_REMOTE}
+EOF
+    chmod 600 "$LLM_WIKI_CONF_FILE"
+    info "Config written to $LLM_WIKI_CONF_FILE"
+  fi
+
+  LLM_WIKI_GIT_HOST="${LLM_WIKI_REMOTE%%:*}"
+  LLM_WIKI_GIT_PATH="${LLM_WIKI_REMOTE#*:}"
+
+  if [[ -d "$LLM_WIKI_DIR/.git" ]]; then
+    info "LLM wiki already cloned at $LLM_WIKI_DIR"
+  else
+    llm_wiki_bare_exists=false
+    if ssh -o ConnectTimeout=5 -o BatchMode=yes "$LLM_WIKI_GIT_HOST" \
+        "test -d '$LLM_WIKI_GIT_PATH'" 2>/dev/null; then
+      llm_wiki_bare_exists=true
+    fi
+
+    if ! $llm_wiki_bare_exists; then
+      if $DRY_RUN; then
+        warn "[dry-run] Would create bare repo at $LLM_WIKI_REMOTE"
+      else
+        info "Creating bare repo at $LLM_WIKI_REMOTE"
+        ssh -o ConnectTimeout=5 "$LLM_WIKI_GIT_HOST" \
+          "mkdir -p '$(dirname "$LLM_WIKI_GIT_PATH")' && git init --bare '$LLM_WIKI_GIT_PATH'"
+
+        TMPDIR_WIKI="$(mktemp -d)"
+        trap 'rm -rf "$TMPDIR_WIKI"' EXIT
+        git -C "$TMPDIR_WIKI" init --quiet
+        git -C "$TMPDIR_WIKI" checkout -b main --quiet
+
+        cat > "$TMPDIR_WIKI/CLAUDE.md" <<'MDEOF'
+# LLM Wiki Schema
+
+This is a Karpathy-pattern persistent knowledge base. Both local Claude Code and NanoClaw
+container agents can read and write here. Sync is handled via git.
+
+## Paths
+- Local Claude Code: `~/.claude/llm-wiki/`
+- NanoClaw containers: `/workspace/extra/llm-wiki/`
+
+## Sync rules
+
+**Before reading or editing anything:**
+```bash
+git -C /workspace/extra/llm-wiki pull --ff-only --quiet
+```
+
+**After any edit:**
+```bash
+git -C /workspace/extra/llm-wiki add -A
+git -C /workspace/extra/llm-wiki commit -m "<concise summary of changes>"
+git -C /workspace/extra/llm-wiki push --quiet
+```
+
+If pull fails (not fast-forwardable), stop and surface the conflict to the user.
+Do not attempt to merge automatically.
+
+## Structure
+
+- `index.md` — catalog of all wiki pages with one-line summaries, organized by category
+- `log.md` — append-only chronological record (`## [YYYY-MM-DD] operation | title`)
+- `wiki/` — LLM-generated pages (summaries, entities, concepts, cross-references)
+- `sources/` — raw immutable source material (articles, PDFs, images, transcripts)
+
+## Operations
+
+**Ingest:** User provides a source → pull → read source → discuss takeaways → create/update
+wiki pages (summary, entities, concepts, cross-references) → update index.md → append log.md
+→ commit + push. Process ONE source at a time. Never batch-read multiple sources and process
+them together — this produces shallow pages.
+
+**Query:** Read index.md first → drill into relevant pages → synthesize answer with citations.
+Good answers can be filed back into wiki/ as new pages.
+
+**Lint:** Check for contradictions, orphan pages (no inbound links), stale content, missing
+cross-references, and gaps. Report findings and offer to fix. Run periodically or on request.
+
+## Source download
+
+For URLs, download the full content rather than using WebFetch (which summarizes):
+```bash
+# PDF / binary
+curl -sLo sources/filename.pdf "<url>"
+# Webpage: use agent-browser to open and extract full text
+agent-browser open <url>
+agent-browser snapshot
+```
+MDEOF
+
+        cat > "$TMPDIR_WIKI/index.md" <<'MDEOF'
+# Wiki Index
+
+Content-oriented catalog of all wiki pages. Updated on every ingest.
+Read this first before answering any query.
+
+## Pages
+
+_No pages yet. Add sources to begin building the wiki._
+MDEOF
+
+        cat > "$TMPDIR_WIKI/log.md" <<'MDEOF'
+# Wiki Log
+
+Append-only chronological record. Format: `## [YYYY-MM-DD] operation | title`
+Parse last 5 entries: `grep "^## \[" log.md | tail -5`
+
+---
+MDEOF
+
+        mkdir -p "$TMPDIR_WIKI/wiki" "$TMPDIR_WIKI/sources"
+        touch "$TMPDIR_WIKI/wiki/.gitkeep" "$TMPDIR_WIKI/sources/.gitkeep"
+
+        git -C "$TMPDIR_WIKI" add -A
+        git -C "$TMPDIR_WIKI" -c user.name="nanoclaw" \
+            -c user.email="nanoclaw@local" \
+            commit -m "init: llm-wiki skeleton" --quiet
+        git -C "$TMPDIR_WIKI" remote add origin "$LLM_WIKI_REMOTE"
+        git -C "$TMPDIR_WIKI" push origin main --quiet
+        info "LLM wiki skeleton committed and pushed to bare repo"
+      fi
+    fi
+
+    if ! $DRY_RUN; then
+      info "Cloning llm-wiki to $LLM_WIKI_DIR"
+      git clone "$LLM_WIKI_REMOTE" "$LLM_WIKI_DIR" --quiet
+      info "LLM wiki ready at $LLM_WIKI_DIR"
+    else
+      warn "[dry-run] Would clone $LLM_WIKI_REMOTE → $LLM_WIKI_DIR"
+    fi
+  fi
+fi
+
 # ── Print next steps ──────────────────────────────────────────────────────────
 
 heading "MemPalace MCP registration (manual step)"
@@ -347,5 +524,10 @@ EOF
 
 info "Done!"
 info "Stop hooks: sync JSONL sessions + memory wiki to VM after each session."
+if $WITH_LLM_WIKI; then
+  info "LLM wiki Stop hook wired — edits in ~/.claude/llm-wiki/ sync on session end."
+  info "On the VM: add the llm-wiki cron from deploy/crontab.vm (pull-commit-push every 5 min)."
+  info "NanoClaw side: run /add-karpathy-llm-wiki to mount the wiki RW into your agent group."
+fi
 info "For nightly catch-up, install the local crontab: crontab deploy/crontab.local"
 info "On the VM: run 'crontab deploy/crontab.vm' to install the memory pull cron."
