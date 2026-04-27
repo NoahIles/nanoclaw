@@ -338,6 +338,10 @@ function buildMounts(
  * Sync skill symlinks in .claude-shared/skills/ to match the container.json
  * selection. Each symlink points to a container path (/app/skills/<name>)
  * so it's dangling on the host but valid inside the container.
+ *
+ * Also discovers skills in additionalMounts host paths (e.g. the wiki at
+ * /opt/nanoclaw/memory/skills/) and symlinks them to their container paths
+ * (/workspace/extra/<mount>/skills/<name>).
  */
 function syncSkillSymlinks(claudeDir: string, containerConfig: import('./container-config.js').ContainerConfig): void {
   const skillsDir = path.join(claudeDir, 'skills');
@@ -345,7 +349,7 @@ function syncSkillSymlinks(claudeDir: string, containerConfig: import('./contain
     fs.mkdirSync(skillsDir, { recursive: true });
   }
 
-  // Determine desired skill set
+  // Determine desired skill set from container/skills/
   const projectRoot = process.cwd();
   const sharedSkillsDir = path.join(projectRoot, 'container', 'skills');
   let desired: string[];
@@ -364,7 +368,28 @@ function syncSkillSymlinks(claudeDir: string, containerConfig: import('./contain
     desired = containerConfig.skills;
   }
 
-  const desiredSet = new Set(desired);
+  // Discover skills from additionalMounts host paths (e.g. wiki skills).
+  // Maps skill name → container target path for each extra skill found.
+  const extraSkills = new Map<string, string>();
+  if (containerConfig.additionalMounts) {
+    for (const mount of containerConfig.additionalMounts) {
+      const containerRelPath = mount.containerPath || path.basename(mount.hostPath);
+      if (!containerRelPath || containerRelPath.startsWith('/') || containerRelPath.includes('..')) continue;
+      const hostSkillsDir = path.join(mount.hostPath, 'skills');
+      if (!fs.existsSync(hostSkillsDir)) continue;
+      try {
+        for (const entry of fs.readdirSync(hostSkillsDir)) {
+          try {
+            if (fs.statSync(path.join(hostSkillsDir, entry)).isDirectory()) {
+              extraSkills.set(entry, `/workspace/extra/${containerRelPath}/skills/${entry}`);
+            }
+          } catch { /* skip unreadable entries */ }
+        }
+      } catch { /* skip if dir not readable */ }
+    }
+  }
+
+  const desiredSet = new Set([...desired, ...extraSkills.keys()]);
 
   // Remove symlinks not in the desired set
   for (const entry of fs.readdirSync(skillsDir)) {
@@ -380,7 +405,7 @@ function syncSkillSymlinks(claudeDir: string, containerConfig: import('./contain
     }
   }
 
-  // Create symlinks for desired skills (container path targets)
+  // Create symlinks for container/skills/ (target: /app/skills/<name>)
   for (const skill of desired) {
     const linkPath = path.join(skillsDir, skill);
     let exists = false;
@@ -392,6 +417,21 @@ function syncSkillSymlinks(claudeDir: string, containerConfig: import('./contain
     }
     if (!exists) {
       fs.symlinkSync(`/app/skills/${skill}`, linkPath);
+    }
+  }
+
+  // Create symlinks for extra (wiki) skills (target: /workspace/extra/...)
+  for (const [skill, containerTarget] of extraSkills) {
+    const linkPath = path.join(skillsDir, skill);
+    let exists = false;
+    try {
+      fs.lstatSync(linkPath);
+      exists = true;
+    } catch {
+      /* missing */
+    }
+    if (!exists) {
+      fs.symlinkSync(containerTarget, linkPath);
     }
   }
 }
